@@ -17,7 +17,8 @@ mode: ambient
 output_window: 0.10
 
 # Rain direction: down (classic), up, left, right,
-# down-left, down-right, up-left, up-right
+# down-left, down-right, up-left, up-right,
+# or random — a fresh direction is picked each time rain starts
 direction: down
 
 # Signature easter egg: after `after` seconds of rain, the word `text`
@@ -31,7 +32,8 @@ signature:
   interval: 30
   column: 5
 
-# Colors: green, red, blue, magenta, cyan, white
+# Colors: green, red, blue, magenta, cyan, white,
+# or rainbow — every drop gets its own random color
 # NOTE: red vs green is the classic colorblind confusion pair. The approval
 # state always draws a reverse-video text banner as well, so it reads by
 # form regardless of hue — but if red/green look alike to you, swap

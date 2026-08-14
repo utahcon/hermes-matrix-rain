@@ -225,8 +225,10 @@ def main() -> int:
     ap.add_argument("--tty", required=True)
     ap.add_argument("--delay", type=float, default=0.0)
     ap.add_argument("--parent-pid", type=int, default=0)
-    ap.add_argument("--color", default="green", choices=sorted(RAMPS))
-    ap.add_argument("--direction", default="down", choices=sorted(DIRECTIONS))
+    ap.add_argument("--color", default="green",
+                    choices=sorted(RAMPS) + ["rainbow"])
+    ap.add_argument("--direction", default="down",
+                    choices=sorted(DIRECTIONS) + ["random"])
     ap.add_argument("--banner", default="")
     ap.add_argument("--sig-text", default="")
     ap.add_argument("--sig-after", type=float, default=30.0)
@@ -276,8 +278,18 @@ def main() -> int:
         except OSError:
             return True  # e.g. EPERM — process exists, not ours
 
-    head, bright, dim, faint = RAMPS[args.color]
-    d = DIRECTIONS[args.direction]
+    rainbow = args.color == "rainbow"
+    if not rainbow:
+        head, bright, dim, faint = RAMPS[args.color]
+    ramp_pool = list(RAMPS.values())
+
+    def assign_ramp(drop) -> None:
+        drop.ramp = random.choice(ramp_pool)
+
+    if args.direction == "random":
+        d = DIRECTIONS[random.choice(list(DIRECTIONS))]
+    else:
+        d = DIRECTIONS[args.direction]
     atime0 = atime()
     rows, cols = term_size(fd)
 
@@ -299,6 +311,9 @@ def main() -> int:
     if d[0] and d[1]:
         n_drops = (rain_rows + cols) // 2 + cols // 2
     drops = [Drop(rain_rows, cols, d, initial=True) for _ in range(n_drops)]
+    if rainbow:
+        for _dr in drops:
+            assign_ramp(_dr)
     ban_str, ban_cells = banner_cells(args.banner, rain_rows, cols)
 
     # Signature word: falls intact down a fixed column, periodically.
@@ -340,6 +355,9 @@ def main() -> int:
                         n_drops = (rain_rows + nc) // 2 + nc // 2
                     drops = [Drop(rain_rows, nc, d, initial=True)
                              for _ in range(n_drops)]
+                    if rainbow:
+                        for _dr in drops:
+                            assign_ramp(_dr)
                     ban_str, ban_cells = banner_cells(args.banner, rain_rows, nc)
                     if split:
                         w(f"\x1b[{rain_rows + 2};{rows}r" + CLEAR
@@ -369,8 +387,12 @@ def main() -> int:
             for drop in drops:
                 if drop.step():
                     drop.reset()
+                    if rainbow:
+                        assign_ramp(drop)
                 hx, hy = drop.x, drop.y
 
+                if rainbow:
+                    head, bright, dim, faint = drop.ramp
                 cells = (
                     (0, head),
                     (1, bright),
