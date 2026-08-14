@@ -1,0 +1,30 @@
+# matrix-idle-rain configuration
+#
+# mode:
+#   ambient — rain WHILE the agent works (working color), switches to the
+#             approval color + banner when input is required, switches to
+#             the done color when the turn ends. Keypress dismisses.
+#   beacon  — no rain while working; rain only starts once the agent is
+#             done (after delays.beacon_done) or an approval prompt has
+#             been waiting (delays.beacon_approval).
+mode: ambient
+
+# Colors: green, red, blue, magenta, cyan, white
+# NOTE: red vs green is the classic colorblind confusion pair. The approval
+# state always draws a reverse-video text banner as well, so it reads by
+# form regardless of hue — but if red/green look alike to you, swap
+# approval to magenta or white.
+colors:
+  working: green
+  approval: red
+  done: blue
+
+# Seconds of grace before rain starts in each state.
+delays:
+  working: 1.5          # ambient: quick turns never flash rain
+  approval: 0.5         # ambient: near-immediate red alert
+  done: 2.0             # ambient: brief pause before the blue "done" rain
+  beacon_done: 4.0      # beacon mode: turn-end grace
+  beacon_approval: 20.0 # beacon mode: approval-wait grace
+
+approval_banner: "INPUT REQUIRED - PRESS ANY KEY"
