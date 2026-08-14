@@ -16,6 +16,12 @@ mode: ambient
 # window > 0 the rain area is cleared on dismiss instead).
 output_window: 0.10
 
+# Wash-away start (split mode): instead of clearing the rain area when the
+# rain begins, leave the current frame on screen and let the falling drops
+# consume it organically. No effect in fullscreen mode (the alternate
+# screen starts blank).
+wash: true
+
 # Rain direction: down (classic), up, left, right,
 # down-left, down-right, up-left, up-right,
 # or random — a fresh direction is picked each time rain starts
@@ -51,4 +57,4 @@ delays:
   beacon_done: 4.0      # beacon mode: turn-end grace
   beacon_approval: 20.0 # beacon mode: approval-wait grace
 
-approval_banner: "INPUT REQUIRED - PRESS ANY KEY"
+approval_banner: "INPUT NEEDED - PRESS CTRL+L TO VIEW"

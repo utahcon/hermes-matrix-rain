@@ -120,11 +120,13 @@ class Drop:
         self.travel = (rows if self.dy else 0) + (cols if self.dx else 0)
         self.reset(initial=initial)
 
-    def reset(self, initial: bool = False) -> None:
+    def reset(self, initial: bool = False, stagger: float = 0.0) -> None:
         self.x = float(random.randint(1, self.cols))
         self.y = float(random.randint(1, self.rows))
         # Pull the head back behind its entry edge so drops stream in.
-        span = self.travel * (2 if initial else 1)
+        # ``stagger`` widens the spawn spread (in multiples of travel) so
+        # arrivals spread over time — used by wash mode for a gradual sweep.
+        span = self.travel * (2 if initial else 1) + self.travel * stagger
         back = random.uniform(0.2 * self.travel, 0.2 * self.travel + span)
         self.x -= self.dx * back
         self.y -= self.dy * back
@@ -237,6 +239,15 @@ def main() -> int:
     ap.add_argument("--output-window", type=float, default=0.0,
                     help="Fraction of rows (bottom) left as a live output "
                          "window. 0 = fullscreen rain on the alt buffer.")
+    ap.add_argument("--control-file", default="",
+                    help="Path to a live-state file: line 1 = color, "
+                         "line 2 = banner text. Polled every few frames; "
+                         "changes apply without restarting the animation.")
+    ap.add_argument("--wash", action="store_true",
+                    help="Split mode: don't clear the rain area at start — "
+                         "the drops wash away the existing frame as they "
+                         "fall. (No effect in fullscreen: the alternate "
+                         "screen starts blank.)")
     args = ap.parse_args()
 
     signal.signal(signal.SIGTERM, _bail)
@@ -278,13 +289,20 @@ def main() -> int:
         except OSError:
             return True  # e.g. EPERM — process exists, not ours
 
-    rainbow = args.color == "rainbow"
-    if not rainbow:
-        head, bright, dim, faint = RAMPS[args.color]
     ramp_pool = list(RAMPS.values())
 
     def assign_ramp(drop) -> None:
         drop.ramp = random.choice(ramp_pool)
+
+    # Color/banner are LIVE state: initialized from CLI, then updated from
+    # the control file mid-animation (no frame reset on state change).
+    cur_color = args.color
+    cur_banner = args.banner
+    rainbow = cur_color == "rainbow"
+    head = bright = dim = faint = ""
+    if not rainbow:
+        head, bright, dim, faint = RAMPS[cur_color]
+    ctl_mtime = 0  # 0 = any existing control file is read on first poll
 
     if args.direction == "random":
         d = DIRECTIONS[random.choice(list(DIRECTIONS))]
@@ -294,13 +312,18 @@ def main() -> int:
     rows, cols = term_size(fd)
 
     # Split mode: reserve the bottom fraction as a live output window.
+    # Fullscreen (output_window 0) uses the alt screen but STILL reserves a
+    # minimal 2-row sink: the foreground session writes to the shared TTY
+    # regardless of buffers, so without a confined scroll region its output
+    # stomps the animation. The sink is the only real fix.
     split = 0.0 < args.output_window < 0.9
 
     def region(rows_total: int) -> int:
-        """Rows available to the rain (excludes separator + output window)."""
-        if not split:
-            return rows_total
-        out_rows = max(2, int(round(rows_total * args.output_window)))
+        """Rows available to the rain (excludes separator + output sink)."""
+        if split:
+            out_rows = max(2, int(round(rows_total * args.output_window)))
+        else:
+            out_rows = 2  # minimal sink on the alt screen
         return max(4, rows_total - out_rows - 1)  # -1 separator row
 
     def sep_line(rain_rows_: int, cols_: int) -> str:
@@ -310,11 +333,56 @@ def main() -> int:
     n_drops = cols if d[1] else rain_rows
     if d[0] and d[1]:
         n_drops = (rain_rows + cols) // 2 + cols // 2
-    drops = [Drop(rain_rows, cols, d, initial=True) for _ in range(n_drops)]
+    # Wash mode: drops all start BEHIND the entry edge, staggered widely,
+    # so they sweep in over several seconds and consume the old frame
+    # progressively. Otherwise scatter drops across the screen so full
+    # rain appears instantly.
+    wash = split and args.wash
+    drops = [Drop(rain_rows, cols, d, initial=not wash)
+             for _ in range(n_drops)]
+    if wash:
+        for _dr in drops:
+            _dr.reset(stagger=10.0)
     if rainbow:
         for _dr in drops:
             assign_ramp(_dr)
-    ban_str, ban_cells = banner_cells(args.banner, rain_rows, cols)
+    ban_str, ban_cells = banner_cells(cur_banner, rain_rows, cols)
+
+    def poll_control() -> bool:
+        """Re-read the control file if changed. Returns True when the
+        banner changed (caller must rebuild banner cells + clear its old
+        box)."""
+        nonlocal cur_color, cur_banner, rainbow, head, bright, dim, faint
+        nonlocal ctl_mtime
+        if not args.control_file:
+            return False
+        try:
+            st = os.stat(args.control_file)
+        except OSError:
+            return False
+        if st.st_mtime_ns == ctl_mtime:
+            return False
+        ctl_mtime = st.st_mtime_ns
+        try:
+            with open(args.control_file) as fh:
+                lines = fh.read().splitlines()
+        except OSError:
+            return False
+        new_color = (lines[0].strip() if lines else "") or cur_color
+        new_banner = lines[1].strip() if len(lines) > 1 else ""
+        if new_color in RAMPS or new_color == "rainbow":
+            cur_color = new_color
+            rainbow = cur_color == "rainbow"
+            if rainbow:
+                for _dr in drops:
+                    if not hasattr(_dr, "ramp"):
+                        assign_ramp(_dr)
+            else:
+                head, bright, dim, faint = RAMPS[cur_color]
+        if new_banner != cur_banner:
+            cur_banner = new_banner
+            return True
+        return False
 
     # Signature word: falls intact down a fixed column, periodically.
     sig = SigWord(args.sig_text, max(1, args.sig_col)) if args.sig_text else None
@@ -322,19 +390,24 @@ def main() -> int:
 
     dismissed = False
     started = time.monotonic()
-    if split:
-        # No alt screen: the bottom window must show the REAL session
-        # output. Restrict scrolling to the output window so streaming
-        # text never enters the rain area, and clear the rain canvas.
-        w(
-            CUR_HIDE
-            + f"\x1b[1;{rain_rows}r\x1b[1;1H\x1b[2J"  # clear via temp region
-            + f"\x1b[{rain_rows + 2};{rows}r"          # scroll = output win
-            + f"\x1b[{rows};1H"                        # park cursor in window
-            + sep_line(rain_rows, cols)
-        )
+    # Both modes confine the session's output to a bottom scroll region so
+    # streaming text never enters the rain area. Fullscreen additionally
+    # switches to the alt buffer first (scrollback stays untouched).
+    setup = "" if split else ALT_ON
+    if split and args.wash:
+        # Wash mode: leave the existing frame in place — the rain's
+        # erasers consume it as drops pass. Only set the regions.
+        clear_part = ""
     else:
-        w(ALT_ON + CUR_HIDE + CLEAR)
+        clear_part = f"\x1b[1;{rain_rows}r\x1b[1;1H\x1b[2J"
+    w(
+        setup
+        + CUR_HIDE
+        + clear_part
+        + f"\x1b[{rain_rows + 2};{rows}r"          # scroll = output sink
+        + f"\x1b[{rows};1H"                        # park cursor in sink
+        + sep_line(rain_rows, cols)
+    )
     frame_t = 1.0 / FPS
     tick = 0
     try:
@@ -358,12 +431,22 @@ def main() -> int:
                     if rainbow:
                         for _dr in drops:
                             assign_ramp(_dr)
-                    ban_str, ban_cells = banner_cells(args.banner, rain_rows, nc)
+                    ban_str, ban_cells = banner_cells(cur_banner, rain_rows, nc)
                     if split:
                         w(f"\x1b[{rain_rows + 2};{rows}r" + CLEAR
                           + sep_line(rain_rows, cols))
                     else:
-                        w(CLEAR)
+                        w(f"\x1b[1;{rain_rows}r\x1b[1;1H\x1b[2J"
+                          + f"\x1b[{rain_rows + 2};{rows}r"
+                          + f"\x1b[{rows};1H"
+                          + sep_line(rain_rows, cols))
+
+            if tick % 3 == 0 and poll_control():
+                # Banner changed: wipe the old box, rebuild for the new.
+                for (by, bx) in ban_cells:
+                    if 1 <= by <= rain_rows:
+                        w(f"\x1b[{by};{bx}H ")
+                ban_str, ban_cells = banner_cells(cur_banner, rain_rows, cols)
 
             if sig and not sig.active and (
                 time.monotonic() - started >= args.sig_after
@@ -446,7 +529,11 @@ def main() -> int:
                 except OSError:
                     pass
             else:
-                os.write(fd, (RESET + CLEAR + CUR_SHOW + ALT_OFF).encode())
+                # Fullscreen: reset the scroll region BEFORE leaving the
+                # alt buffer (DECSTBM persists across buffer switches in
+                # most emulators), then restore the original screen.
+                os.write(fd, (RESET + "\x1b[r" + CLEAR + CUR_SHOW
+                              + ALT_OFF).encode())
             os.close(fd)
         except OSError:
             pass

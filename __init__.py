@@ -32,6 +32,7 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -54,10 +55,11 @@ _DEFAULTS = {
         "beacon_done": 4.0,
         "beacon_approval": 20.0,
     },
-    "approval_banner": "INPUT REQUIRED - PRESS ANY KEY",
+    "approval_banner": "INPUT NEEDED - PRESS CTRL+L TO VIEW",
     "signature": {"enabled": False, "text": "hermes", "after": 30.0,
                   "interval": 30.0, "column": 5},
     "output_window": 0.10,
+    "wash": True,
 }
 
 
@@ -128,6 +130,24 @@ def _note_dismissal() -> None:
         _state["proc_phase"] = None
 
 
+def _control_path() -> str:
+    return os.path.join(
+        tempfile.gettempdir(), f"hermes-rain-{os.getpid()}.ctl"
+    )
+
+
+def _write_control(color: str, banner: str) -> None:
+    """Atomically update the live renderer's color/banner."""
+    path = _control_path()
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as fh:
+            fh.write(f"{color}\n{banner}\n")
+        os.replace(tmp, path)
+    except OSError as exc:  # pragma: no cover — defensive
+        logger.debug("matrix-idle-rain: control write failed: %s", exc)
+
+
 def _stop_rain() -> None:
     _note_dismissal()
     proc = _state.get("proc")
@@ -150,12 +170,15 @@ def _spawn_rain(phase: str, color: str, delay: float, banner: str = "") -> None:
     # User already dismissed rain in this phase — respect that.
     if _state["dismissed_phase"] == phase:
         return
-    # Same-phase renderer already running (e.g. repeated pre_tool_call) —
-    # leave it alone to avoid restart flicker.
     proc = _state.get("proc")
-    if proc is not None and proc.poll() is None and _state["proc_phase"] == phase:
+    if proc is not None and proc.poll() is None:
+        # Renderer already live: morph color/banner IN PLACE via the
+        # control file — no kill, no frame reset, drops keep falling.
+        _write_control(color, banner)
+        _state["proc_phase"] = phase
         return
     _stop_rain()
+    _write_control(color, banner)  # renderer reads it on first poll
     cmd = [
         sys.executable, str(_RAIN_SCRIPT),
         "--tty", tty,
@@ -164,7 +187,10 @@ def _spawn_rain(phase: str, color: str, delay: float, banner: str = "") -> None:
         "--color", color,
         "--direction", str(_CFG.get("direction", "down")),
         "--output-window", str(_CFG.get("output_window", 0.0)),
+        "--control-file", _control_path(),
     ]
+    if _CFG.get("wash", True):
+        cmd += ["--wash"]
     sig = _CFG.get("signature") or {}
     if sig.get("enabled") and sig.get("text"):
         cmd += ["--sig-text", str(sig["text"]),

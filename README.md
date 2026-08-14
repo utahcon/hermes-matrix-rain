@@ -27,8 +27,8 @@ agent finishes (default 4s grace) or an approval prompt has sat unanswered
 ## Accessibility note
 
 Red vs green is the classic colorblind confusion pair. The input-required
-state therefore ALWAYS draws a reverse-video "INPUT REQUIRED - PRESS ANY
-KEY" banner in addition to the color change, so the state reads by form
+state therefore ALWAYS draws a reverse-video "INPUT NEEDED - PRESS CTRL+L TO
+VIEW" banner in addition to the color change, so the state reads by form
 regardless of hue. If red/green look alike to you, swap `colors.approval`
 to `magenta` or `white` in config.yaml.
 
@@ -77,7 +77,7 @@ Edit `config.yaml` in the plugin directory:
       done: 2.0
       beacon_done: 4.0
       beacon_approval: 20.0
-    approval_banner: "INPUT REQUIRED - PRESS ANY KEY"
+    approval_banner: "INPUT NEEDED - PRESS CTRL+L TO VIEW"
 
 The `delays.working` grace means quick turns never flash rain at you.
 Frame rate and glyph set live at the top of `rain.py`.
