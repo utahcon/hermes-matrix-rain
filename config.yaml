@@ -22,10 +22,11 @@ direction: down
 
 # Signature easter egg: after `after` seconds of continuous rain, some
 # drops spawning on the left third of the screen spell `text` in dark
-# orange along their trail.
+# orange along their trail. Set your own handle in
+# ~/.config/hermes-rain/config.yaml rather than editing this file.
 signature:
-  enabled: true
-  text: utahcon
+  enabled: false
+  text: hermes
   after: 30
 
 # Colors: green, red, blue, magenta, cyan, white

@@ -55,26 +55,44 @@ _DEFAULTS = {
         "beacon_approval": 20.0,
     },
     "approval_banner": "INPUT REQUIRED - PRESS ANY KEY",
-    "signature": {"enabled": True, "text": "utahcon", "after": 30.0},
+    "signature": {"enabled": False, "text": "hermes", "after": 30.0},
     "output_window": 0.10,
 }
 
 
+def _user_config_path() -> Path:
+    """XDG user config: ~/.config/hermes-rain/config.yaml (respects
+    $XDG_CONFIG_HOME). Overrides the repo-shipped config.yaml so users can
+    keep personal settings across `git pull` updates of the plugin."""
+    base = os.environ.get("XDG_CONFIG_HOME", "").strip() or os.path.expanduser(
+        "~/.config"
+    )
+    return Path(base) / "hermes-rain" / "config.yaml"
+
+
 def _load_config() -> dict:
     cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in _DEFAULTS.items()}
-    try:
-        import yaml
 
-        raw = yaml.safe_load(_CONFIG_PATH.read_text()) or {}
+    def merge_file(path: Path) -> None:
+        try:
+            import yaml
+
+            raw = yaml.safe_load(path.read_text()) or {}
+        except FileNotFoundError:
+            return
+        except Exception as exc:  # bad YAML must never break the agent
+            logger.warning(
+                "matrix-idle-rain: %s unreadable (%s), skipping", path, exc
+            )
+            return
         for key, val in raw.items():
             if key in ("colors", "delays", "signature") and isinstance(val, dict):
                 cfg[key].update(val)
             elif key in cfg:
                 cfg[key] = val
-    except FileNotFoundError:
-        pass
-    except Exception as exc:  # bad YAML must never break the agent
-        logger.warning("matrix-idle-rain: config.yaml unreadable (%s), using defaults", exc)
+
+    merge_file(_CONFIG_PATH)        # repo defaults (plugin dir)
+    merge_file(_user_config_path())  # user overrides (XDG)
     return cfg
 
 

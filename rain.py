@@ -360,19 +360,38 @@ def main() -> int:
     finally:
         try:
             if split:
-                # Reset scroll region, wipe the rain area, and park the
-                # cursor at the separator row so the session continues
-                # right below where output was flowing.
+                # Reset the scroll region and clear. We cannot restore what
+                # the rain painted over (no alt screen in split mode), so
+                # force the foreground app to repaint: jiggle the tty size
+                # (rows-1, then back) — a REAL winsize change is the only
+                # thing readline/Ink/prompt frameworks reliably redraw on
+                # (plain SIGWINCH with unchanged size is ignored).
                 os.write(fd, (
-                    RESET + f"\x1b[r"
-                    + f"\x1b[1;1H\x1b[{rain_rows + 1};{cols}H\x1b[1J"
-                    + CUR_SHOW + f"\x1b[{rows};1H"
+                    RESET + "\x1b[r" + CLEAR + CUR_SHOW
+                    + f"\x1b[{rows};1H"
                 ).encode())
+                try:
+                    ws = fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\x00" * 8)
+                    r, c, xp, yp = struct.unpack("HHHH", ws)
+                    fcntl.ioctl(fd, termios.TIOCSWINSZ,
+                                struct.pack("HHHH", max(r - 1, 2), c, xp, yp))
+                    time.sleep(0.05)
+                    fcntl.ioctl(fd, termios.TIOCSWINSZ,
+                                struct.pack("HHHH", r, c, xp, yp))
+                except OSError:
+                    pass
             else:
                 os.write(fd, (RESET + CLEAR + CUR_SHOW + ALT_OFF).encode())
             os.close(fd)
         except OSError:
             pass
+        if split and args.parent_pid:
+            # Belt and suspenders for apps that catch WINCH without
+            # tracking size.
+            try:
+                os.kill(args.parent_pid, signal.SIGWINCH)
+            except OSError:
+                pass
     return EXIT_DISMISSED if dismissed else 0
 
 
