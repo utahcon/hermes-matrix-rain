@@ -55,7 +55,8 @@ _DEFAULTS = {
         "beacon_approval": 20.0,
     },
     "approval_banner": "INPUT REQUIRED - PRESS ANY KEY",
-    "signature": {"enabled": False, "text": "hermes", "after": 30.0},
+    "signature": {"enabled": False, "text": "hermes", "after": 30.0,
+                  "interval": 30.0, "column": 5},
     "output_window": 0.10,
 }
 
@@ -167,7 +168,9 @@ def _spawn_rain(phase: str, color: str, delay: float, banner: str = "") -> None:
     sig = _CFG.get("signature") or {}
     if sig.get("enabled") and sig.get("text"):
         cmd += ["--sig-text", str(sig["text"]),
-                "--sig-after", str(sig.get("after", 30.0))]
+                "--sig-after", str(sig.get("after", 30.0)),
+                "--sig-interval", str(sig.get("interval", 30.0)),
+                "--sig-col", str(sig.get("column", 5))]
     if banner:
         cmd += ["--banner", banner]
     try:

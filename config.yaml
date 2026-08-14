@@ -20,14 +20,16 @@ output_window: 0.10
 # down-left, down-right, up-left, up-right
 direction: down
 
-# Signature easter egg: after `after` seconds of continuous rain, some
-# drops spawning on the left third of the screen spell `text` in dark
-# orange along their trail. Set your own handle in
+# Signature easter egg: after `after` seconds of rain, the word `text`
+# falls intact (stacked vertically, dark orange) down column `column`,
+# once every `interval` seconds. Set your own handle in
 # ~/.config/hermes-rain/config.yaml rather than editing this file.
 signature:
   enabled: false
   text: hermes
   after: 30
+  interval: 30
+  column: 5
 
 # Colors: green, red, blue, magenta, cyan, white
 # NOTE: red vs green is the classic colorblind confusion pair. The approval

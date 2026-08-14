@@ -48,8 +48,10 @@ except ImportError:  # non-POSIX — plugin never spawns us there
 
 EXIT_DISMISSED = 3
 
-# Katakana + latin + digits, the classic mix.
-GLYPHS = [chr(c) for c in range(0x30A0, 0x30FF)] + list(
+# Halfwidth katakana (single-cell width — fullwidth kana are 2 cells wide
+# and spill into neighbours, chewing the signature and banner) + latin +
+# digits. Halfwidth kana are also what the film actually used.
+GLYPHS = [chr(c) for c in range(0xFF66, 0xFF9E)] + list(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789*+-<>"
 )
 
@@ -111,16 +113,14 @@ class Drop:
     """A rain particle moving along a fixed unit direction vector."""
 
     def __init__(self, rows: int, cols: int, d: tuple[int, int],
-                 sig_text: str = "", sig_ok: bool = False,
                  initial: bool = False):
         self.rows = rows
         self.cols = cols
         self.dx, self.dy = d
         self.travel = (rows if self.dy else 0) + (cols if self.dx else 0)
-        self.reset(sig_text, sig_ok, initial=initial)
+        self.reset(initial=initial)
 
-    def reset(self, sig_text: str = "", sig_ok: bool = False,
-              initial: bool = False) -> None:
+    def reset(self, initial: bool = False) -> None:
         self.x = float(random.randint(1, self.cols))
         self.y = float(random.randint(1, self.rows))
         # Pull the head back behind its entry edge so drops stream in.
@@ -129,17 +129,7 @@ class Drop:
         self.x -= self.dx * back
         self.y -= self.dy * back
         self.speed = random.choice((1, 1, 1, 2))
-        # Signature drops must spawn aimed at the left third of the screen.
-        self.sig = bool(
-            sig_text and sig_ok
-            and random.random() < SIG_FRACTION
-            and (self.dx != 0 or self.x <= self.cols / 3)
-        )
-        if self.sig:
-            self.text = sig_text
-            self.length = len(sig_text)
-        else:
-            self.length = random.randint(4, max(5, self.travel - 2))
+        self.length = random.randint(4, max(5, self.travel - 2))
 
     def step(self) -> bool:
         """Advance; return True when the whole trail has left the screen."""
@@ -156,6 +146,56 @@ class Drop:
         if self.dx < 0 and tx < 1:
             return True
         return False
+
+
+class SigWord:
+    """The signature: the word, stacked vertically in a fixed column,
+    falling top-to-bottom as one intact unit. Spawned once every
+    ``interval`` seconds after ``after`` seconds of rain."""
+
+    STEP_EVERY = 2  # frames per row of fall — slower than the rain, readable
+
+    def __init__(self, text: str, col: int):
+        self.text = text
+        self.col = col
+        self.active = False
+        self.head = 0  # row of the LAST letter (bottom of the word)
+        self._frame = 0
+
+    def spawn(self) -> None:
+        self.active = True
+        self.head = 0  # word starts fully above the screen
+        self._frame = 0
+
+    def render(self, rows: int, cols: int,
+               ban_cells: set[tuple[int, int]]) -> str:
+        """Advance (every STEP_EVERY frames) and return the ANSI to draw
+        the word plus an eraser above it. Deactivates once fully off."""
+        if not self.active or self.col > cols:
+            return ""
+        self._frame += 1
+        if self._frame % self.STEP_EVERY:
+            advance = False
+        else:
+            advance = True
+            self.head += 1
+        L = len(self.text)
+        top = self.head - L + 1
+        if top > rows:
+            self.active = False
+            return ""
+        if not advance:
+            pass  # still redraw every frame so rain can't chew the word
+        buf = []
+        for i, ch in enumerate(self.text):
+            y = top + i
+            if 1 <= y <= rows and (y, self.col) not in ban_cells:
+                buf.append(f"\x1b[{y};{self.col}H{SIG_BODY}{ch}")
+        # Eraser: the cell the word's top just vacated.
+        if advance and 1 <= top - 1 <= rows \
+                and (top - 1, self.col) not in ban_cells:
+            buf.append(f"\x1b[{top - 1};{self.col}H ")
+        return "".join(buf)
 
 
 def banner_cells(banner: str, rows: int, cols: int) -> tuple[str, set[tuple[int, int]]]:
@@ -190,6 +230,8 @@ def main() -> int:
     ap.add_argument("--banner", default="")
     ap.add_argument("--sig-text", default="")
     ap.add_argument("--sig-after", type=float, default=30.0)
+    ap.add_argument("--sig-interval", type=float, default=30.0)
+    ap.add_argument("--sig-col", type=int, default=5)
     ap.add_argument("--output-window", type=float, default=0.0,
                     help="Fraction of rows (bottom) left as a live output "
                          "window. 0 = fullscreen rain on the alt buffer.")
@@ -259,6 +301,10 @@ def main() -> int:
     drops = [Drop(rain_rows, cols, d, initial=True) for _ in range(n_drops)]
     ban_str, ban_cells = banner_cells(args.banner, rain_rows, cols)
 
+    # Signature word: falls intact down a fixed column, periodically.
+    sig = SigWord(args.sig_text, max(1, args.sig_col)) if args.sig_text else None
+    sig_last = -1e9  # so the first spawn happens right at sig_after
+
     dismissed = False
     started = time.monotonic()
     if split:
@@ -301,35 +347,29 @@ def main() -> int:
                     else:
                         w(CLEAR)
 
-            sig_ok = bool(args.sig_text) and (
+            if sig and not sig.active and (
                 time.monotonic() - started >= args.sig_after
-            )
+                and time.monotonic() - sig_last >= args.sig_interval
+            ):
+                sig.spawn()
+                sig_last = time.monotonic()
 
             buf: list[str] = []
             if split:
                 buf.append("\x1b7")  # save foreground cursor
+            # Render the signature FIRST so its post-advance cells mask the
+            # rain this frame; paint it after the drops so it stays on top.
+            sig_str = ""
+            sig_cells: set[tuple[int, int]] = set()
+            if sig and sig.active:
+                sig_str = sig.render(rain_rows, cols, ban_cells)
+                L = len(sig.text)
+                top = sig.head - L + 1
+                sig_cells = {(top + i, sig.col) for i in range(L)}
             for drop in drops:
                 if drop.step():
-                    drop.reset(args.sig_text, sig_ok)
+                    drop.reset()
                 hx, hy = drop.x, drop.y
-
-                if drop.sig:
-                    # Full word along the trail, dark orange, plus eraser.
-                    L = drop.length
-                    for i in range(L):
-                        x = round(hx - drop.dx * i)
-                        y = round(hy - drop.dy * i)
-                        if 1 <= y <= rain_rows and 1 <= x <= cols \
-                                and (y, x) not in ban_cells:
-                            ch = drop.text[L - 1 - i]
-                            color = SIG_HEAD if i == 0 else SIG_BODY
-                            buf.append(f"\x1b[{y};{x}H{color}{ch}")
-                    ex = round(hx - drop.dx * L)
-                    ey = round(hy - drop.dy * L)
-                    if 1 <= ey <= rain_rows and 1 <= ex <= cols \
-                            and (ey, ex) not in ban_cells:
-                        buf.append(f"\x1b[{ey};{ex}H ")
-                    continue
 
                 cells = (
                     (0, head),
@@ -342,12 +382,15 @@ def main() -> int:
                     x = round(hx - drop.dx * i)
                     y = round(hy - drop.dy * i)
                     if 1 <= y <= rain_rows and 1 <= x <= cols \
-                            and (y, x) not in ban_cells:
+                            and (y, x) not in ban_cells \
+                            and (y, x) not in sig_cells:
                         if color is None:
                             buf.append(f"\x1b[{y};{x}H ")
                         else:
                             g = random.choice(GLYPHS)
                             buf.append(f"\x1b[{y};{x}H{color}{g}")
+            if sig_str:
+                buf.append(sig_str)
             buf.append(RESET)
             if ban_str:
                 buf.append(ban_str)
