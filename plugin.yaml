@@ -1,0 +1,10 @@
+name: matrix-idle-rain
+version: 1.0.0
+description: "Matrix digital-rain 'your turn' beacon for CLI sessions. When the agent finishes its turn (or has been waiting on an approval prompt), green rain takes over the terminal via the alternate screen buffer. Any keypress dismisses it and restores the screen exactly as it was. No-op for non-TTY sessions (gateway, cron)."
+author: Bear Barrett
+hooks:
+  - post_llm_call
+  - pre_llm_call
+  - pre_tool_call
+  - pre_approval_request
+  - post_approval_response
