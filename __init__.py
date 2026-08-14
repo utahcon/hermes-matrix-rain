@@ -45,6 +45,7 @@ _EXIT_DISMISSED = 3
 
 _DEFAULTS = {
     "mode": "ambient",
+    "direction": "down",
     "colors": {"working": "green", "approval": "red", "done": "blue"},
     "delays": {
         "working": 1.5,
@@ -54,6 +55,8 @@ _DEFAULTS = {
         "beacon_approval": 20.0,
     },
     "approval_banner": "INPUT REQUIRED - PRESS ANY KEY",
+    "signature": {"enabled": True, "text": "utahcon", "after": 30.0},
+    "output_window": 0.10,
 }
 
 
@@ -64,7 +67,7 @@ def _load_config() -> dict:
 
         raw = yaml.safe_load(_CONFIG_PATH.read_text()) or {}
         for key, val in raw.items():
-            if key in ("colors", "delays") and isinstance(val, dict):
+            if key in ("colors", "delays", "signature") and isinstance(val, dict):
                 cfg[key].update(val)
             elif key in cfg:
                 cfg[key] = val
@@ -140,7 +143,13 @@ def _spawn_rain(phase: str, color: str, delay: float, banner: str = "") -> None:
         "--delay", str(delay),
         "--parent-pid", str(os.getpid()),
         "--color", color,
+        "--direction", str(_CFG.get("direction", "down")),
+        "--output-window", str(_CFG.get("output_window", 0.0)),
     ]
+    sig = _CFG.get("signature") or {}
+    if sig.get("enabled") and sig.get("text"):
+        cmd += ["--sig-text", str(sig["text"]),
+                "--sig-after", str(sig.get("after", 30.0))]
     if banner:
         cmd += ["--banner", banner]
     try:

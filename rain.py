@@ -4,7 +4,7 @@ Spawned by the matrix-idle-rain Hermes plugin. Not meant to be run by hand,
 but you can:
 
     python3 rain.py --tty $(tty) --delay 1 --parent-pid $$ --color blue \
-        --banner "HELLO"
+        --direction up --banner "HELLO" --sig-text utahcon --sig-after 30
 
 Lifecycle:
   1. Sleep ``--delay`` seconds. If killed during the nap, exit silently.
@@ -13,11 +13,18 @@ Lifecycle:
        * SIGTERM/SIGINT (plugin killed us — state change)     -> exit 0
        * tty atime changed (user pressed a key)               -> exit 3
        * parent pid vanished (Hermes exited)                  -> exit 0
-  4. Restore: leave alt screen, show cursor. The original screen contents
-     come back exactly as they were.
+  4. Restore: leave alt screen, show cursor.
 
 Exit code 3 tells the plugin the USER dismissed the rain, so it won't
 respawn rain for the same phase.
+
+Directions: down (classic), up, left, right, down-left, down-right,
+up-left, up-right. Drops are velocity-vector particles, so all directions
+share one code path.
+
+Signature: after ``--sig-after`` seconds of visible rain, a fraction of
+drops spawning in the left third of the screen render their trail as the
+letters of ``--sig-text`` in dark orange instead of random glyphs.
 
 Pure stdlib. No curses — we write ANSI directly to the tty device so we
 don't fight the foreground process for stdin.
@@ -64,7 +71,23 @@ RAMPS: dict[str, tuple[str, str, str, str]] = {
     "white":   ("\x1b[97m", "\x1b[97m", "\x1b[37m", "\x1b[2;37m"),
 }
 
+# Dark orange for the signature (256-color): head 208, body 166.
+SIG_HEAD = "\x1b[38;5;208m"
+SIG_BODY = "\x1b[38;5;166m"
+
+DIRECTIONS: dict[str, tuple[int, int]] = {
+    "down": (0, 1),
+    "up": (0, -1),
+    "right": (1, 0),
+    "left": (-1, 0),
+    "down-right": (1, 1),
+    "down-left": (-1, 1),
+    "up-right": (1, -1),
+    "up-left": (-1, -1),
+}
+
 FPS = 14
+SIG_FRACTION = 0.35  # chance a left-third respawn becomes a signature drop
 
 _running = True
 
@@ -84,28 +107,59 @@ def term_size(fd: int) -> tuple[int, int]:
         return 24, 80
 
 
-class Column:
-    def __init__(self, rows: int):
+class Drop:
+    """A rain particle moving along a fixed unit direction vector."""
+
+    def __init__(self, rows: int, cols: int, d: tuple[int, int],
+                 sig_text: str = "", sig_ok: bool = False,
+                 initial: bool = False):
         self.rows = rows
-        self.reset(initial=True)
+        self.cols = cols
+        self.dx, self.dy = d
+        self.travel = (rows if self.dy else 0) + (cols if self.dx else 0)
+        self.reset(sig_text, sig_ok, initial=initial)
 
-    def reset(self, initial: bool = False) -> None:
-        self.y = -random.randint(0, self.rows * 2 if initial else self.rows)
+    def reset(self, sig_text: str = "", sig_ok: bool = False,
+              initial: bool = False) -> None:
+        self.x = float(random.randint(1, self.cols))
+        self.y = float(random.randint(1, self.rows))
+        # Pull the head back behind its entry edge so drops stream in.
+        span = self.travel * (2 if initial else 1)
+        back = random.uniform(0.2 * self.travel, 0.2 * self.travel + span)
+        self.x -= self.dx * back
+        self.y -= self.dy * back
         self.speed = random.choice((1, 1, 1, 2))
-        self.length = random.randint(4, max(5, self.rows - 2))
+        # Signature drops must spawn aimed at the left third of the screen.
+        self.sig = bool(
+            sig_text and sig_ok
+            and random.random() < SIG_FRACTION
+            and (self.dx != 0 or self.x <= self.cols / 3)
+        )
+        if self.sig:
+            self.text = sig_text
+            self.length = len(sig_text)
+        else:
+            self.length = random.randint(4, max(5, self.travel - 2))
 
-    def step(self) -> None:
-        self.y += self.speed
-        if self.y - self.length > self.rows:
-            self.reset()
+    def step(self) -> bool:
+        """Advance; return True when the whole trail has left the screen."""
+        self.x += self.dx * self.speed
+        self.y += self.dy * self.speed
+        tx = self.x - self.dx * self.length
+        ty = self.y - self.dy * self.length
+        if self.dy > 0 and ty > self.rows:
+            return True
+        if self.dy < 0 and ty < 1:
+            return True
+        if self.dx > 0 and tx > self.cols:
+            return True
+        if self.dx < 0 and tx < 1:
+            return True
+        return False
 
 
 def banner_cells(banner: str, rows: int, cols: int) -> tuple[str, set[tuple[int, int]]]:
-    """Precompute the banner draw string and the cells it occupies.
-
-    Reverse-video box, centered. Returns (ansi_string, occupied_cells) —
-    the rain skips occupied cells so the banner stays crisp.
-    """
+    """Precompute the banner draw string and the cells it occupies."""
     if not banner:
         return "", set()
     text = f"  {banner}  "
@@ -132,7 +186,13 @@ def main() -> int:
     ap.add_argument("--delay", type=float, default=0.0)
     ap.add_argument("--parent-pid", type=int, default=0)
     ap.add_argument("--color", default="green", choices=sorted(RAMPS))
+    ap.add_argument("--direction", default="down", choices=sorted(DIRECTIONS))
     ap.add_argument("--banner", default="")
+    ap.add_argument("--sig-text", default="")
+    ap.add_argument("--sig-after", type=float, default=30.0)
+    ap.add_argument("--output-window", type=float, default=0.0,
+                    help="Fraction of rows (bottom) left as a live output "
+                         "window. 0 = fullscreen rain on the alt buffer.")
     args = ap.parse_args()
 
     signal.signal(signal.SIGTERM, _bail)
@@ -175,19 +235,50 @@ def main() -> int:
             return True  # e.g. EPERM — process exists, not ours
 
     head, bright, dim, faint = RAMPS[args.color]
+    d = DIRECTIONS[args.direction]
     atime0 = atime()
     rows, cols = term_size(fd)
-    columns = [Column(rows) for _ in range(cols)]
-    ban_str, ban_cells = banner_cells(args.banner, rows, cols)
+
+    # Split mode: reserve the bottom fraction as a live output window.
+    split = 0.0 < args.output_window < 0.9
+
+    def region(rows_total: int) -> int:
+        """Rows available to the rain (excludes separator + output window)."""
+        if not split:
+            return rows_total
+        out_rows = max(2, int(round(rows_total * args.output_window)))
+        return max(4, rows_total - out_rows - 1)  # -1 separator row
+
+    def sep_line(rain_rows_: int, cols_: int) -> str:
+        return f"\x1b[{rain_rows_ + 1};1H\x1b[2;37m" + "─" * cols_ + RESET
+
+    rain_rows = region(rows)
+    n_drops = cols if d[1] else rain_rows
+    if d[0] and d[1]:
+        n_drops = (rain_rows + cols) // 2 + cols // 2
+    drops = [Drop(rain_rows, cols, d, initial=True) for _ in range(n_drops)]
+    ban_str, ban_cells = banner_cells(args.banner, rain_rows, cols)
 
     dismissed = False
-    w(ALT_ON + CUR_HIDE + CLEAR)
+    started = time.monotonic()
+    if split:
+        # No alt screen: the bottom window must show the REAL session
+        # output. Restrict scrolling to the output window so streaming
+        # text never enters the rain area, and clear the rain canvas.
+        w(
+            CUR_HIDE
+            + f"\x1b[1;{rain_rows}r\x1b[1;1H\x1b[2J"  # clear via temp region
+            + f"\x1b[{rain_rows + 2};{rows}r"          # scroll = output win
+            + f"\x1b[{rows};1H"                        # park cursor in window
+            + sep_line(rain_rows, cols)
+        )
+    else:
+        w(ALT_ON + CUR_HIDE + CLEAR)
     frame_t = 1.0 / FPS
     tick = 0
     try:
         while _running:
             tick += 1
-            # Dismissal checks (atime every frame is a cheap stat).
             if atime() != atime0:
                 dismissed = True
                 break
@@ -197,37 +288,88 @@ def main() -> int:
                 nr, nc = term_size(fd)
                 if (nr, nc) != (rows, cols):
                     rows, cols = nr, nc
-                    columns = [Column(rows) for _ in range(cols)]
-                    ban_str, ban_cells = banner_cells(args.banner, rows, cols)
-                    w(CLEAR)
+                    rain_rows = region(rows)
+                    n_drops = nc if d[1] else rain_rows
+                    if d[0] and d[1]:
+                        n_drops = (rain_rows + nc) // 2 + nc // 2
+                    drops = [Drop(rain_rows, nc, d, initial=True)
+                             for _ in range(n_drops)]
+                    ban_str, ban_cells = banner_cells(args.banner, rain_rows, nc)
+                    if split:
+                        w(f"\x1b[{rain_rows + 2};{rows}r" + CLEAR
+                          + sep_line(rain_rows, cols))
+                    else:
+                        w(CLEAR)
+
+            sig_ok = bool(args.sig_text) and (
+                time.monotonic() - started >= args.sig_after
+            )
 
             buf: list[str] = []
-            for x, col in enumerate(columns):
-                col.step()
-                head_y = col.y
-                # Draw head, trailers, and erase the tail end.
+            if split:
+                buf.append("\x1b7")  # save foreground cursor
+            for drop in drops:
+                if drop.step():
+                    drop.reset(args.sig_text, sig_ok)
+                hx, hy = drop.x, drop.y
+
+                if drop.sig:
+                    # Full word along the trail, dark orange, plus eraser.
+                    L = drop.length
+                    for i in range(L):
+                        x = round(hx - drop.dx * i)
+                        y = round(hy - drop.dy * i)
+                        if 1 <= y <= rain_rows and 1 <= x <= cols \
+                                and (y, x) not in ban_cells:
+                            ch = drop.text[L - 1 - i]
+                            color = SIG_HEAD if i == 0 else SIG_BODY
+                            buf.append(f"\x1b[{y};{x}H{color}{ch}")
+                    ex = round(hx - drop.dx * L)
+                    ey = round(hy - drop.dy * L)
+                    if 1 <= ey <= rain_rows and 1 <= ex <= cols \
+                            and (ey, ex) not in ban_cells:
+                        buf.append(f"\x1b[{ey};{ex}H ")
+                    continue
+
                 cells = (
-                    (head_y, head),
-                    (head_y - 1, bright),
-                    (head_y - 2, dim),
-                    (head_y - col.length // 2, faint),
-                    (head_y - col.length, None),  # eraser
+                    (0, head),
+                    (1, bright),
+                    (2, dim),
+                    (drop.length // 2, faint),
+                    (drop.length, None),  # eraser
                 )
-                for y, color in cells:
-                    if 1 <= y <= rows and (y, x + 1) not in ban_cells:
+                for i, color in cells:
+                    x = round(hx - drop.dx * i)
+                    y = round(hy - drop.dy * i)
+                    if 1 <= y <= rain_rows and 1 <= x <= cols \
+                            and (y, x) not in ban_cells:
                         if color is None:
-                            buf.append(f"\x1b[{y};{x + 1}H ")
+                            buf.append(f"\x1b[{y};{x}H ")
                         else:
                             g = random.choice(GLYPHS)
-                            buf.append(f"\x1b[{y};{x + 1}H{color}{g}")
+                            buf.append(f"\x1b[{y};{x}H{color}{g}")
             buf.append(RESET)
             if ban_str:
                 buf.append(ban_str)
+            if split:
+                if tick % FPS == 0:  # re-assert separator ~1/sec
+                    buf.append(sep_line(rain_rows, cols))
+                buf.append("\x1b8")  # restore foreground cursor
             w("".join(buf))
             time.sleep(frame_t)
     finally:
         try:
-            os.write(fd, (RESET + CLEAR + CUR_SHOW + ALT_OFF).encode())
+            if split:
+                # Reset scroll region, wipe the rain area, and park the
+                # cursor at the separator row so the session continues
+                # right below where output was flowing.
+                os.write(fd, (
+                    RESET + f"\x1b[r"
+                    + f"\x1b[1;1H\x1b[{rain_rows + 1};{cols}H\x1b[1J"
+                    + CUR_SHOW + f"\x1b[{rows};1H"
+                ).encode())
+            else:
+                os.write(fd, (RESET + CLEAR + CUR_SHOW + ALT_OFF).encode())
             os.close(fd)
         except OSError:
             pass

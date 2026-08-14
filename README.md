@@ -42,11 +42,31 @@ Takes effect on the next CLI session start (plugins load at startup).
 Requires only Python stdlib and a POSIX TTY (Linux/macOS). No dependencies.
 No-op for non-TTY sessions (gateway, cron, subagents).
 
+## Output window (split mode)
+
+By default (`output_window: 0.10`) the bottom 10% of the screen stays a
+LIVE output window: a scroll region confines the session's streaming
+output there, under a separator line, so output never fights the
+animation. Set `output_window: 0` for fullscreen rain on the alternate
+screen buffer (pixel-perfect restore on dismiss; split mode instead
+clears the rain area and leaves the output window's text in place).
+
+Note on dismissal: keypress detection watches the TTY's atime, which
+updates when the foreground app reads input. The Hermes TUI reads stdin
+continuously so dismissal is immediate; under a program that never reads
+stdin the rain persists until the next read (or state change).
+
 ## Configure
 
 Edit `config.yaml` in the plugin directory:
 
     mode: ambient            # or: beacon
+    output_window: 0.10      # bottom fraction kept for live output; 0 = fullscreen
+    direction: down          # down|up|left|right|down-left|down-right|up-left|up-right
+    signature:
+      enabled: true          # after `after` seconds, left-side drops spell
+      text: utahcon          # `text` in dark orange along their trail
+      after: 30
     colors:
       working: green         # green|red|blue|magenta|cyan|white
       approval: red

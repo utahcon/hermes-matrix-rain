@@ -9,6 +9,25 @@
 #             been waiting (delays.beacon_approval).
 mode: ambient
 
+# Bottom fraction of the screen kept as a LIVE output window while it
+# rains — the session's streaming output scrolls there instead of
+# fighting the animation. 0 disables the window (fullscreen rain on the
+# alternate screen buffer, pixel-perfect restore on dismiss; with a
+# window > 0 the rain area is cleared on dismiss instead).
+output_window: 0.10
+
+# Rain direction: down (classic), up, left, right,
+# down-left, down-right, up-left, up-right
+direction: down
+
+# Signature easter egg: after `after` seconds of continuous rain, some
+# drops spawning on the left third of the screen spell `text` in dark
+# orange along their trail.
+signature:
+  enabled: true
+  text: utahcon
+  after: 30
+
 # Colors: green, red, blue, magenta, cyan, white
 # NOTE: red vs green is the classic colorblind confusion pair. The approval
 # state always draws a reverse-video text banner as well, so it reads by
